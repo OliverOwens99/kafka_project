@@ -1,14 +1,15 @@
+package consumer;
 import java.io.*;
 import java.net.*;
 import java.util.Scanner;
 
-public class Producer {
+public class consumer {
 
     private static final String HOST = "localhost";
     private static final int PORT = 9092;
 
     public static void main(String[] args) {
-        System.out.println("Producer connected to broker at " + HOST + ":" + PORT);
+        System.out.println("Consumer connected to broker at " + HOST + ":" + PORT);
 
         try (
             Socket socket = new Socket(HOST, PORT);
@@ -20,22 +21,21 @@ public class Producer {
         ) {
 
             while (true) {
-                System.out.print("Enter topic: ");
+                System.out.print("Enter topic to consume: ");
                 String topic = scanner.nextLine();
 
-                System.out.print("Enter message: ");
-                String message = scanner.nextLine();
-
-                String payload = topic + ":" + message;
-
-                // Send message
-                writer.write(payload);
+                // Send consume request
+                writer.write("CONSUME " + topic);
                 writer.newLine();
                 writer.flush();
 
-                // Wait for ACK
-                String response = reader.readLine();
-                System.out.println("Broker response: " + response);
+                System.out.println("Messages from topic [" + topic + "]:");
+
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.equals("END")) break;
+                    System.out.println("> " + line);
+                }
             }
 
         } catch (IOException e) {
