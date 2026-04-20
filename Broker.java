@@ -8,7 +8,9 @@ public class Broker {
     private static final int PORT = 9092;
 
     // Topic -> Messages
-    private static final Map<String, List<String>> topics = new ConcurrentHashMap<>();
+
+    private static final int DEFAULT_PARTITIONS = 3;
+    private static final Map<String, Map<Integer, List<String>>> topics = new ConcurrentHashMap<>();
 
     private static final Map<String, Map<String, List<String>>> consumerGroups =
         new ConcurrentHashMap<>();
@@ -63,70 +65,57 @@ public class Broker {
 
                         // ---------------- PRODUCE ----------------
                         case "PRODUCE" -> {
-                            if (parts.length < 3) {
+                        if (parts.length < 3) {
                                 writer.write("ERROR: Usage PRODUCE <topic> <message>\n");
                                 writer.flush();
                                 continue;
                             }
-
                             String topic = parts[1];
                             String message = parts[2];
-
-                            topics.putIfAbsent(topic, new CopyOnWriteArrayList<>());
-                            topics.get(topic).add(message);
-
-                            System.out.println("Stored in [" + topic + "]: " + message);
-
+                            topics.putIfAbsent(topic, new ConcurrentHashMap<>());
+                            Map<Integer, List<String>> partitions = topics.get(topic);
+                            if (partitions.isEmpty()) {  // Initialize partitions on first use
+                                for (int i = 0; i < DEFAULT_PARTITIONS; i++) {
+                                    partitions.put(i, new CopyOnWriteArrayList<>());
+                                }
+                            }
+                            int partition = Math.abs(message.hashCode()) % DEFAULT_PARTITIONS;
+                            partitions.get(partition).add(message);
+                            System.out.println("Stored in [" + topic + ":" + partition + "]: " + message);
                             writer.write("ACK\n");
                             writer.flush();
                         }
+                        
 
                         // ---------------- CONSUME ----------------
                         case "CONSUME" -> {
-
-                        if (parts.length < 3) {
-                            writer.write("ERROR: Usage CONSUME <group> <topic>\n");
-                            writer.flush();
-                            continue;
-                        }
-
-                        String group = parts[1];
-                        String topic = parts[2];
-
-                        // Register group + topic
-                        consumerGroups.putIfAbsent(group, new ConcurrentHashMap<>());
-                        consumerGroups.get(group).putIfAbsent(topic, new CopyOnWriteArrayList<>());
-
-                        List<String> messages = topics.getOrDefault(topic, new ArrayList<>());
-                        List<String> groupConsumers = consumerGroups.get(group).get(topic);
-
-                        // Register THIS connection as a consumer (simplified identity)
-                        String consumerId = socket.getInetAddress().toString() + ":" + socket.getPort();
-
-                        if (!groupConsumers.contains(consumerId)) {
-                            groupConsumers.add(consumerId);
-                        }
-
-                        if (messages.isEmpty()) {
-                            writer.write("EMPTY\n");
-                            writer.flush();
-                            continue;
-                        }
-
-                        // Round-robin assignment
-                        int index = Math.abs(consumerId.hashCode()) % messages.size();
-
-                        String assignedMessage = messages.get(index);
-
-                        writer.write("GROUP " + group + "\n");
-                        writer.write("TOPIC " + topic + "\n");
-                        writer.write("MESSAGE " + assignedMessage + "\n");
-                        writer.write("END\n");
-                        writer.flush();
-                    }
-
-                        default -> {
-                            writer.write("ERROR: Unknown command\n");
+                            if (parts.length < 4) {
+                                writer.write("ERROR: Usage CONSUME <group> <topic> <partition>\n");
+                                writer.flush();
+                                continue;
+                            }
+                            String group = parts[1];
+                            String topic = parts[2];
+                            int partition = Integer.parseInt(parts[3]);
+                            Map<Integer, List<String>> partitions = topics.get(topic);
+                            if (partitions == null || !partitions.containsKey(partition)) {
+                                writer.write("ERROR: Topic/partition not found\n");
+                                writer.flush();
+                                continue;
+                            }
+                            List<String> messages = partitions.get(partition);
+                            offsets.putIfAbsent(group, new ConcurrentHashMap<>());
+                            offsets.get(group).putIfAbsent(topic, new ConcurrentHashMap<>());
+                            offsets.get(group).get(topic).putIfAbsent(partition, 0);
+                            int offset = offsets.get(group).get(topic).get(partition);
+                            if (offset >= messages.size()) {
+                                writer.write("EMPTY\n");
+                                writer.flush();
+                                continue;
+                            }
+                            String message = messages.get(offset);
+                            offsets.get(group).get(topic).put(partition, offset + 1);
+                            writer.write("GROUP " + group + "\nTOPIC " + topic + "\nPARTITION " + partition + "\nMESSAGE " + message + "\nEND\n");
                             writer.flush();
                         }
                     }
